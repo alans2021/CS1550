@@ -2317,19 +2317,17 @@ struct cs1550_sem{
 asmlinkage long sys_cs1550_down(struct cs1550_sem *sem){ //asmlinkage means always fetch parameter from stack, not register
 	struct my_queue *queue;
 
+	//Define lock to protect sem-value
 	DEFINE_SPINLOCK(sem_lock);
 	spin_lock(&sem_lock);
 	sem->value = sem->value - 1;
 	if (sem->value < 0){
-		//spin_unlock(&sem_lock);
 		
-		//Sleep();
-		//set_current_state(TASK_INTERRUPTIBLE);
 
 		//Insert current task to queue, "current" points to current task_struct
-		struct task_struct * enqueue_target = current;
+		struct task_struct * enqueue_target = current; //Get current process
 		queue = kmalloc(sizeof(struct my_queue), GFP_KERNEL);
-		queue->task = enqueue_target;
+		queue->task = enqueue_target; //Add to queue
 		if(sem->head == NULL){
 			queue->next = NULL;
 			sem->head = queue;
@@ -2341,9 +2339,6 @@ asmlinkage long sys_cs1550_down(struct cs1550_sem *sem){ //asmlinkage means alwa
 			sem->tail = queue;
 		}
 				
-		//enqueue based on enqueue_target operation
-		//kmalloc(), correspond to malloc()
-		//kfree()
 		spin_unlock(&sem_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
@@ -2355,6 +2350,7 @@ asmlinkage long sys_cs1550_up(struct cs1550_sem *sem){
 	struct my_queue * remove_queue;
 	struct task_struct * sleeping_task;
 
+	//Define lock to protect value
 	DEFINE_SPINLOCK(sem_lock);
 	spin_lock(&sem_lock);
 	sem->value = sem->value + 1;
@@ -2368,8 +2364,6 @@ asmlinkage long sys_cs1550_up(struct cs1550_sem *sem){
 		if(remove_queue != sem->tail)
 			sem->head = sem->head->next;
 		
-		kfree(remove_queue->task);
-		kfree(remove_queue->next);
 		kfree(remove_queue);
 
 		//Wakeup();
