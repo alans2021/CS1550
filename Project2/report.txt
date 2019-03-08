@@ -1,0 +1,20 @@
+This code is fair because a variable called int *inspect_count tracks how many
+total tenants have inspected an apartment. 
+
+Once that variable reaches a multiple of 10, it ups the agent semaphore, which allows an
+agent to leave the apartment.
+
+
+In addition, this program is also deadlock free since once a tenant arrives,
+which is always guaranteed, it's guaranteed to up the open_mutex semaphore,
+allowing any agent that's waiting to wake up and open the apartment.
+Also, when agent opens an apartment, it ups the enter_mutex that a tenant is
+waiting for.
+
+
+Finally, the program is starvation free because a tenant is guaranteed to
+enter the apartment if an agent is present. Once both agent and tenant
+arrives, agent ups the enter_mutex, allowing tenant to enter. Tenant ups the
+open_mutex, allowing agent to enter. In addition, if no tenant is currently in
+the apartment, a variable called int * count tracks that, and if it is
+equivalent to 0, the agent_sem is also upped.
