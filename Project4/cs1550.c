@@ -80,6 +80,7 @@ typedef struct cs1550_disk_block cs1550_disk_block;
 
 cs1550_root_directory root;
 cs1550_directory_entry dir;
+int flag = 0;
 char bitmap[3 * BLOCK_SIZE * 8];
 
 /*
@@ -446,7 +447,6 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 	struct cs1550_file_directory file_entry;
 	int dirBlock = -1;
 	int fileBlock = -1;
-	int index = -1;
 	FILE *f;
 	f = fopen(".disk", "r");
 	fread(&root, BLOCK_SIZE, 1, f);
@@ -465,7 +465,6 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 				file_entry = dir.files[j];
 				if(strcmp(file_entry.fname, filename) == 0 && strcmp(file_entry.fext, extension) == 0){
 					fileBlock = file_entry.nStartBlock;
-					index = j;
 					i = root.nDirectories + 1; //Force loop to break
 					break;					
 				}
@@ -473,27 +472,44 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 		}
 	}
 
-	if(size == 0)
+	if(size == 0){
+		fclose(f);
 		return 0;
-	if(i == root.nDirectories)
+	}
+	if(i == root.nDirectories){
+		fclose(f);
 		return -ENOENT;
-	if(offset > file_entry.fsize)
+	}
+	if(offset > file_entry.fsize){
+		fclose(f);
 		return -EFBIG;
+	}
 
 	while(offset > 512){ //Get to right block
 		fileBlock += 1;
 		offset -= 512;
 	}
 
-	if (size + offset > file_entry.fsize) //if size reading is greater than actual file size, reset size
+	if (size + offset > file_entry.fsize)
 		size = file_entry.fsize;
 	struct cs1550_disk_block disk;
+	int counter = 1;
+	int bytesRemaining = size;
+	while(bytesRemaining > 512){
+		fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
+		fread(&disk, BLOCK_SIZE, 1, f);
+		for(i = offset; i < 512; i++)
+			*(buf + i + (counter - 1) * 512) = disk.data[i];
+		fileBlock++;
+		bytesRemaining -= 512;
+		counter++;
+		offset = 0;		
+	}
 	fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
 	fread(&disk, BLOCK_SIZE, 1, f);
 	fclose(f);
-	
-	for(i = offset; i < size; i++)
-		*(buf + i) = disk.data[i];		
+	for(i = 0; i < bytesRemaining; i++)
+		*(buf + i + (counter - 1) * 512) = disk.data[i];
 
 	return size;
 }
@@ -505,6 +521,7 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 static int cs1550_write(const char *path, const char *buf, size_t size, 
 			  off_t offset, struct fuse_file_info *fi)
 {
+
 	(void) fi;
 	char directory[MAX_FILENAME + 1] = "";
 	char filename[MAX_FILENAME + 1] = "";
@@ -544,18 +561,26 @@ static int cs1550_write(const char *path, const char *buf, size_t size,
 		}
 	}
 
-	if(size == 0)
+	if(size == 0){
+		fclose(f);
 		return 0;
-	if(i == root.nDirectories)
+	}
+	if(i == root.nDirectories){
+		fclose(f);
 		return -ENOENT;
-	if(offset > file_entry.fsize)
+	}
+	if(offset > file_entry.fsize){
+		fclose(f);
 		return -EFBIG;
+	}
 
 	int blocksWrite = (offset + size) / 512 + 1; //Total number of blocks allocated to the file if buffer written
 	int curBlocks = file_entry.fsize / 512 + 1; //Total number of blocks file is currently using
-	if(blocksWrite > curBlocks && bitmap[fileBlock + blocksWrite - 1] == 1)
-		return -ENOSPC; //Return error if writing extra blocks to file, but extra blocks not allocated
 	
+	if(blocksWrite > curBlocks && bitmap[fileBlock + blocksWrite - 1] == 1){
+		fclose(f);
+		return -ENOSPC; //Return error if writing extra blocks to file, but extra blocks not allocated
+	}
 	if((offset + size) > file_entry.fsize) //Adjust size if appending
 		file_entry.fsize = offset + size;
 
@@ -571,7 +596,7 @@ static int cs1550_write(const char *path, const char *buf, size_t size,
 	int counter = 1;
 	while(size > 512){
 		for(i = offset % 512; i < BLOCK_SIZE; i++) //Writing data to disk struct
-			disk.data[i] = *(buf + i * counter);
+			disk.data[i] = *(buf + i + (counter - 1) * 512);
 		bitmap[fileBlock] = 1; //Set bitmap
 		fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
 		fwrite(&disk, BLOCK_SIZE, 1, f); //Write this info to file
@@ -581,11 +606,26 @@ static int cs1550_write(const char *path, const char *buf, size_t size,
 		offset = 0; //After initial iteration, set offset to 0
 		counter++;
 	}
-	for(i = offset; i < 512; i++) //Write remaining data to disk struct
-		disk.data[i] = *(buf  + (i - offset) * counter);
-	bitmap[fileBlock] = 1;
-	fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
-	fwrite(&disk, BLOCK_SIZE, 1, f);
+	int bytesRemaining = size;
+	for(i = offset % 512; i < 512; i++){ //Write remaining data to disk struct
+		disk.data[i] = *(buf  + (i - offset % 512) + (counter - 1) * 512);
+		bytesRemaining--;
+	}
+	if(bytesRemaining > 0){
+		bitmap[fileBlock] = 1;
+		fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
+		fwrite(&disk, BLOCK_SIZE, 1, f);
+		fread(&disk, BLOCK_SIZE, 1, f);
+		for(i = 0; i < bytesRemaining; i++)
+			disk.data[i] = *(buf + (size - bytesRemaining) + i + (counter - 1) * 512);
+		fseek(f, (fileBlock + 1) * BLOCK_SIZE, SEEK_SET);
+		fwrite(&disk, BLOCK_SIZE, 1, f);
+	}
+	else{
+		bitmap[fileBlock] = 1;
+		fseek(f, fileBlock * BLOCK_SIZE, SEEK_SET);
+		fwrite(&disk, BLOCK_SIZE, 1, f);
+	}
 	fclose(f);
 	
 	write_bitmap();	
